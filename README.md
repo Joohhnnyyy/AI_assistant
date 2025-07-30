@@ -1,6 +1,27 @@
-# Gemini AI Code Editor
+# AI Assistant Code Editor
 
 A full-stack AI-powered code editor with Gemini 2.0 Flash integration, providing an intelligent coding experience with features like code completion, AI chat, and more.
+
+## 📝 About
+
+AI Assistant is a powerful, open-source code editor enhanced with AI capabilities. Built with modern web technologies, it offers a seamless development experience with the power of Google's Gemini AI. Whether you're writing code, debugging, or learning new programming concepts, AI Assistant is designed to be your intelligent coding companion.
+
+### Why AI Assistant?
+- **AI-Powered Development**: Get intelligent code suggestions and completions powered by Gemini 2.0 Flash
+- **Modern Web-Based**: Access your development environment from anywhere with a web browser
+- **Extensible Architecture**: Built to support multiple AI providers and extensions
+- **Developer First**: Designed by developers, for developers
+
+### Use Cases
+- **Learning to Code**: Get explanations and examples for programming concepts
+- **Productivity**: Speed up development with AI-assisted coding
+- **Code Review**: Get AI-powered suggestions for improving your code
+- **Teaching**: Use as an educational tool for programming courses
+
+### Project Status
+🚀 **Active Development** - New features and improvements are being added regularly
+
+💡 **Looking for Contributors** - We welcome contributions of all kinds!
 
 ## 🚀 Features
 
@@ -55,8 +76,8 @@ A full-stack AI-powered code editor with Gemini 2.0 Flash integration, providing
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/Joohhnnyyy/gemini_assistant.git
-   cd gemini_assistant
+   git clone https://github.com/Joohhnnyyy/AI_assistant.git
+   cd AI_assistant
    ```
 
 2. Install dependencies for both client and server:
