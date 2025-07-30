@@ -102,51 +102,112 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
     }
   };
 
-  const CodeBlock = ({ language, value }) => {
+  const CodeBlock = ({ node, inline, className, children, ...props }) => {
     const [copied, setCopied] = useState(false);
+    const [showActions, setShowActions] = useState(false);
     const codeRef = useRef(null);
+    const match = /language-(\w+)/.exec(className || '');
+    const language = match ? match[1] : '';
+    const codeContent = String(children).replace(/\n$/, '');
 
     const copyToClipboard = () => {
-      navigator.clipboard.writeText(value);
+      navigator.clipboard.writeText(codeContent);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     };
 
     const applyToEditor = () => {
-      // This would be connected to the main editor
-      // For now, we'll just log it
-      console.log('Applying code to editor:', value);
+      console.log('Applying code to editor:', codeContent);
       // You can implement the actual logic to update the editor content
+    };
+    
+    const getLanguageLabel = (lang) => {
+      const langMap = {
+        'js': 'JavaScript',
+        'javascript': 'JavaScript',
+        'ts': 'TypeScript',
+        'typescript': 'TypeScript',
+        'py': 'Python',
+        'python': 'Python',
+        'html': 'HTML',
+        'css': 'CSS',
+        'json': 'JSON',
+        'jsx': 'JSX',
+        'tsx': 'TSX',
+        'bash': 'Bash',
+        'sh': 'Shell',
+        'md': 'Markdown',
+        'yaml': 'YAML',
+        'yml': 'YAML',
+      };
+      return langMap[language?.toLowerCase()] || language || 'Code';
     };
 
     return (
-      <div className="relative my-4 rounded-md overflow-hidden border border-gray-200 dark:border-gray-700">
-        <div className="flex items-center justify-between bg-gray-100 dark:bg-gray-800 px-3 py-1.5 text-xs text-gray-600 dark:text-gray-400">
-          <span className="flex items-center">
-            <FaTerminal className="w-3.5 h-3.5 mr-1.5" />
-            {language || 'code'}
-          </span>
-          <div className="flex space-x-1">
-            <button
+      <div 
+        className="relative my-4 rounded-lg overflow-hidden border border-[#2d2d2d] bg-[#1e1e1e] text-sm"
+        onMouseEnter={() => setShowActions(true)}
+        onMouseLeave={() => setShowActions(false)}
+      >
+        {/* Language tab */}
+        <div className="flex items-center justify-between px-4 py-2 bg-[#2d2d2d] text-xs text-gray-400 border-b border-[#404040]">
+          <div className="flex items-center">
+            <FaCode className="w-3 h-3 mr-2 text-blue-400" />
+            <span className="font-medium text-gray-300">{getLanguageLabel(language)}</span>
+          </div>
+          
+          {/* Action buttons - shown on hover */}
+          <div className={`flex items-center space-x-2 transition-opacity ${showActions ? 'opacity-100' : 'opacity-0'}`}>
+            <button 
               onClick={applyToEditor}
-              className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
-              title="Apply to editor"
+              className="flex items-center px-2 py-1 text-xs rounded-md bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+              title="Apply to code"
             >
-              <FaCode className="w-3.5 h-3.5" />
+              <FaTerminal className="w-3 h-3 mr-1" />
+              <span>Apply</span>
             </button>
-            <button
+            <button 
               onClick={copyToClipboard}
-              className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
-              title={copied ? 'Copied!' : 'Copy to clipboard'}
+              className={`flex items-center px-2 py-1 text-xs rounded-md ${copied ? 'bg-green-600' : 'bg-gray-700 hover:bg-gray-600'} text-white transition-colors`}
+              title={copied ? 'Copied!' : 'Copy code'}
             >
-              {copied ? <FaCheck className="w-3.5 h-3.5 text-green-500" /> : <FaCopy className="w-3.5 h-3.5" />}
+              {copied ? <FaCheck className="w-3 h-3 mr-1" /> : <FaCopy className="w-3 h-3 mr-1" />}
+              <span>{copied ? 'Copied' : 'Copy'}</span>
             </button>
           </div>
         </div>
-        <div className="bg-gray-50 dark:bg-gray-900 p-3 overflow-x-auto" ref={codeRef}>
-          <pre className="text-sm font-mono m-0 p-0">
-            <code>{value}</code>
+        
+        {/* Code content */}
+        <div className="relative ml-8">
+          <pre className="p-4 overflow-x-auto m-0">
+            <code 
+              ref={codeRef} 
+              className={`language-${language} block whitespace-pre`}
+              style={{
+                fontFamily: 'var(--vscode-editor-font-family, "Fira Code", "Droid Sans Mono", "monospace")',
+                fontSize: '0.875rem',
+                lineHeight: '1.5',
+                display: 'block',
+                minWidth: '100%',
+                overflow: 'visible',
+                wordBreak: 'break-word',
+                whiteSpace: 'pre-wrap'
+              }}
+              {...props}
+            >
+              {children}
+            </code>
           </pre>
+          
+          {/* Fade effect at the bottom for long code blocks */}
+          <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-[#1e1e1e] to-transparent pointer-events-none"></div>
+        </div>
+        
+        {/* Line numbers */}
+        <div className="absolute left-0 top-10 bottom-0 w-8 text-right pr-2 text-xs text-gray-500 select-none border-r border-[#2d2d2d] bg-[#1e1e1e] z-10">
+          {codeContent.split('\n').map((_, i) => (
+            <div key={i} className="h-5 leading-5">{i + 1}</div>
+          ))}
         </div>
       </div>
     );
@@ -187,12 +248,10 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
                 remarkPlugins={[remarkGfm]}
                 components={{
                   code({node, inline, className, children, ...props}) {
-                    const match = /language-(\w+)/.exec(className || '');
-                    return !inline && match ? (
-                      <CodeBlock
-                        language={match[1]}
-                        value={String(children).replace(/\n$/, '')}
-                      />
+                    return !inline ? (
+                      <CodeBlock className={className} {...props}>
+                        {children}
+                      </CodeBlock>
                     ) : (
                       <code className={className} {...props}>
                         {children}

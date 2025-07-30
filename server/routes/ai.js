@@ -82,7 +82,10 @@ router.post("/complete", async (req, res) => {
     console.log("Sending request to:", GEMINI_API_URL);
     console.log("Request body:", JSON.stringify(requestBody, null, 2));
 
-    const response = await fetch(`${GEMINI_API_URL}?key=${GEMINI_API_KEY}`, {
+    const apiUrl = `${GEMINI_API_URL}?key=${GEMINI_API_KEY}`;
+    console.log('Full Gemini API URL:', apiUrl);
+    
+    const response = await fetch(apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -93,7 +96,9 @@ router.post("/complete", async (req, res) => {
     const responseText = await response.text();
     console.log("Gemini API response status:", response.status);
     console.log("Gemini API response headers:", JSON.stringify([...response.headers.entries()]));
-    console.log("Gemini API response body:", responseText);
+    console.log("Gemini API response body (first 1000 chars):", responseText.substring(0, 1000));
+    console.log("Response content type:", response.headers.get('content-type'));
+    console.log("Response ok:", response.ok);
     
     if (!response.ok) {
       console.error(`Gemini API error: ${response.status} ${response.statusText}`);
