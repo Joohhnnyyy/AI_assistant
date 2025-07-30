@@ -1,0 +1,14 @@
+[
+  {
+    "name": "Write docstring",
+    "template": "Write a docstring for the following code: {{code}}"
+  },
+  {
+    "name": "Convert to TypeScript",
+    "template": "Convert this code to TypeScript: {{code}}"
+  },
+  {
+    "name": "Write tests",
+    "template": "Write unit tests for this function: {{code}}"
+  }
+]
