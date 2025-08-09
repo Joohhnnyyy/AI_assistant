@@ -45,8 +45,23 @@ export default function FileTree({ onOpen, onToggleCollapse }) {
     setTree(data.tree || []);
   }, []);
 
+  // Set up event listener for refresh-filetree event
   useEffect(() => {
+    const handleRefresh = () => {
+      console.log('Refreshing file tree...');
+      load();
+    };
+
+    // Add event listener
+    window.addEventListener('refresh-filetree', handleRefresh);
+    
+    // Initial load
     load();
+    
+    // Clean up event listener on component unmount
+    return () => {
+      window.removeEventListener('refresh-filetree', handleRefresh);
+    };
   }, [load]);
 
   const toggle = (path) => {

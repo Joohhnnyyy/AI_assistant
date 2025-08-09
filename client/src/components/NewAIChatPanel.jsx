@@ -1,52 +1,139 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { aiComplete } from "../api";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'prism-react-renderer';
-import { FaCopy, FaCheck, FaCode, FaTerminal } from 'react-icons/fa';
+import { FaCopy, FaCheck, FaCode, FaTerminal, FaSpinner } from 'react-icons/fa';
 import { applyGitDiff } from "../api";
 import { 
   FaUser, FaRobot, FaPaperPlane, FaTimes, FaGripLines, 
   FaCog, FaRegLightbulb, FaHistory, FaPlus, FaEllipsisV, 
   FaSearch, FaChevronDown, FaRegTrashAlt, FaRegEdit, FaRegClone, FaRegStar, FaRegFileAlt 
 } from 'react-icons/fa';
+import {
+  getCurrentUser,
+  getUserConversations,
+  getConversation,
+  createConversation,
+  updateConversation,
+  deleteConversation
+} from '../api/auth';
 
 const NewAIChatPanel = ({ isOpen, onClose }) => {
   const [input, setInput] = useState("");
-  const [conversations, setConversations] = useState([
-    { id: '1', title: 'New Chat', isActive: true },
-  ]);
-  const [messages, setMessages] = useState([
-    { 
-      id: '1', 
-      role: 'ai', 
-      content: 'Hello! I\'m your AI coding assistant. How can I help you today?', 
-      timestamp: new Date(),
-      isError: false 
-    }
-  ]);
-  const [loading, setLoading] = useState(false);
+  const [conversations, setConversations] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [showConversationMenu, setShowConversationMenu] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [isInitialized, setIsInitialized] = useState(false);
   const messagesEndRef = useRef(null);
   const panelRef = useRef(null);
-  const activeConversation = conversations.find(c => c.isActive)?.id || '1';
+  const activeConversation = conversations.find(c => c.isActive)?.id || null;
 
-  const startNewChat = () => {
-    const newId = Date.now().toString();
-    setConversations(prev => [
-      { id: newId, title: 'New Chat', isActive: true },
-      ...prev.map(c => ({ ...c, isActive: false }))
-    ]);
-    setMessages([
-      { 
+  // Initialize user and load conversations
+  const initializeUser = useCallback(async () => {
+    try {
+      setLoading(true);
+      const user = await getCurrentUser();
+      setCurrentUser(user);
+      
+      // Load user's conversations
+      const userConversations = await getUserConversations(user._id);
+      setConversations(userConversations.map(conv => ({
+        id: conv._id,
+        title: conv.title,
+        isActive: false,
+        updatedAt: new Date(conv.updatedAt)
+      })));
+      
+      // If no conversations, create a default one
+      if (userConversations.length === 0) {
+        const newConv = await createConversation(user._id, 'New Chat');
+        setConversations([{
+          id: newConv._id,
+          title: newConv.title,
+          isActive: true,
+          updatedAt: new Date(newConv.updatedAt)
+        }]);
+        setMessages(newConv.messages || []);
+      } else {
+        // Load the most recent conversation
+        const mostRecent = userConversations[0];
+        setConversations(prev => 
+          prev.map(c => ({
+            ...c,
+            isActive: c.id === mostRecent._id
+          }))
+        );
+        setMessages(mostRecent.messages || []);
+      }
+    } catch (error) {
+      console.error('Error initializing user:', error);
+      // Fallback to local state if API fails
+      setMessages([{ 
         id: '1', 
         role: 'ai', 
-        content: 'Hello! How can I assist you with your coding today?', 
+        content: 'Hello! I\'m your AI coding assistant. How can I help you today?', 
         timestamp: new Date(),
         isError: false 
-      }
-    ]);
+      }]);
+    } finally {
+      setLoading(false);
+      setIsInitialized(true);
+    }
+  }, []);
+
+  // Load a specific conversation
+  const loadConversation = async (conversationId) => {
+    if (!currentUser) return;
+    
+    try {
+      setLoading(true);
+      const conversation = await getConversation(conversationId, currentUser._id);
+      
+      setConversations(prev => 
+        prev.map(c => ({
+          ...c,
+          isActive: c.id === conversationId
+        }))
+      );
+      
+      setMessages(conversation.messages || []);
+    } catch (error) {
+      console.error('Error loading conversation:', error);
+      alert('Failed to load conversation. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Start a new conversation
+  const startNewChat = async () => {
+    if (!currentUser) return;
+    
+    try {
+      setLoading(true);
+      const newConv = await createConversation(currentUser._id, 'New Chat');
+      
+      setConversations(prev => [
+        {
+          id: newConv._id,
+          title: newConv.title,
+          isActive: true,
+          updatedAt: new Date(newConv.updatedAt)
+        },
+        ...prev.map(c => ({ ...c, isActive: false }))
+      ]);
+      
+      setMessages(newConv.messages || []);
+    } catch (error) {
+      console.error('Error creating new conversation:', error);
+      alert('Failed to create a new conversation. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSend = async (e) => {
@@ -113,6 +200,107 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
     }
   };
 
+  const handleDeleteConversation = async (id) => {
+    if (!currentUser) return;
+    
+    // Don't allow deleting the last conversation
+    if (conversations.length <= 1) {
+      alert('You must have at least one conversation');
+      return;
+    }
+    
+    try {
+      await deleteConversation(id, currentUser._id);
+      
+      // Find the next conversation to activate
+      const currentIndex = conversations.findIndex(c => c.id === id);
+      const nextActiveIndex = currentIndex === 0 && conversations.length > 1 ? 1 : 0;
+      const nextActiveId = conversations[nextActiveIndex]?.id;
+      
+      // Update local state
+      setConversations(prev => 
+        prev
+          .filter(conv => conv.id !== id)
+          .map((conv, idx) => ({
+            ...conv,
+            isActive: idx === nextActiveIndex
+          }))
+      );
+      
+      // If the deleted conversation was active, load the next one
+      if (id === activeConversation && nextActiveId) {
+        await loadConversation(nextActiveId);
+      }
+      
+    } catch (error) {
+      console.error('Error deleting conversation:', error);
+      alert('Failed to delete conversation. Please try again.');
+    }
+  };
+
+  const applyToEditor = async (codeContent) => {
+    console.log('Apply button clicked');
+    console.log('Code content:', codeContent);
+    
+    // Check for path: comment in the first few lines (supports both // and # comments)
+    const pathMatch = codeContent.match(/^[#\/]{1,2}\s*path:\s*([^\s].*?)\s*$/m);
+    console.log('Path match:', pathMatch);
+    
+    if (pathMatch) {
+      // Extract the file path and clean up the code content
+      const filePath = pathMatch[1].trim();
+      const cleanContent = codeContent.replace(/^\/\/\s*path:.*$/m, '').trimStart();
+      
+      try {
+        // Create the file using the filesystem API
+        const response = await fetch('/api/fs/write', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: filePath, content: cleanContent })
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok) {
+          alert(`File created successfully at: ${filePath}`);
+          // Trigger a refresh of the file tree
+          window.dispatchEvent(new CustomEvent('refresh-filetree'));
+        } else {
+          alert(`Failed to create file: ${result.error || 'Unknown error'}`);
+        }
+        return;
+      } catch (e) {
+        console.error('File creation error:', e);
+        alert(`Error creating file: ${e.message}`);
+        return;
+      }
+    }
+    
+    // If content looks like a unified diff, offer to apply via git apply
+    const looksLikeDiff = /^(---\s+a\/|\+\+\+\s+b\/|@@\s)/m.test(codeContent);
+    if (looksLikeDiff) {
+      try {
+        // Try several -p levels server-side to avoid manual editing
+        const dry = await applyGitDiff(codeContent, { dryRun: true });
+        if (dry?.ok === false) {
+          alert(`Diff failed dry-run:\n${dry.stderr || dry.stdout || 'Unknown error'}`);
+          return;
+        }
+        const res = await applyGitDiff(codeContent, { dryRun: false });
+        if (res?.ok) {
+          alert('Changes applied successfully!');
+        } else {
+          alert(`Failed to apply changes:\n${res?.stderr || res?.stdout || 'Unknown error'}`);
+        }
+      } catch (e) {
+        console.error('Error applying diff:', e);
+        alert(`Error applying changes: ${e.message}`);
+      }
+    } else {
+      alert('No file path specified. Add a comment like "// path: filename.ext" at the top of the code block.');
+    }
+  };
+
   const CodeBlock = ({ node, inline, className, children, ...props }) => {
     const [copied, setCopied] = useState(false);
     const [showActions, setShowActions] = useState(false);
@@ -125,74 +313,6 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
       navigator.clipboard.writeText(codeContent);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    };
-
-    const applyToEditor = async () => {
-      // Check for path: comment in the first few lines
-      const pathMatch = codeContent.match(/^\/\/\s*path:\s*([^\s].*?)\s*$/m);
-      
-      if (pathMatch) {
-        // Extract the file path and clean up the code content
-        const filePath = pathMatch[1].trim();
-        const cleanContent = codeContent.replace(/^\/\/\s*path:.*$/m, '').trimStart();
-        
-        try {
-          // Create the file using the filesystem API
-          const response = await fetch('/api/fs/write', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: filePath, content: cleanContent })
-          });
-          
-          const result = await response.json();
-          
-          if (response.ok) {
-            alert(`File created successfully at: ${filePath}`);
-            // Trigger a refresh of the file tree
-            window.dispatchEvent(new CustomEvent('refresh-filetree'));
-          } else {
-            alert(`Failed to create file: ${result.error || 'Unknown error'}`);
-          }
-          return;
-        } catch (e) {
-          console.error('File creation error:', e);
-          alert(`Error creating file: ${e.message}`);
-          return;
-        }
-      }
-      
-      // If content looks like a unified diff, offer to apply via git apply
-      const looksLikeDiff = /^(---\s+a\/|\+\+\+\s+b\/|@@\s)/m.test(codeContent);
-      if (looksLikeDiff) {
-        try {
-          // Try several -p levels server-side to avoid manual editing
-          const dry = await applyGitDiff(codeContent, { dryRun: true });
-          if (dry?.ok === false) {
-            alert(`Diff failed dry-run:\n${dry.stderr || dry.stdout || 'Unknown error'}`);
-            return;
-          }
-          const res = await applyGitDiff(codeContent, { dryRun: false });
-          if (res?.ok) {
-            alert('Diff applied successfully');
-          } else {
-            alert(`Failed to apply diff:\n${res?.stderr || res?.stdout || 'Unknown error'}`);
-          }
-          return;
-        } catch (e) {
-          console.error('Apply diff error:', e);
-          alert(`Error applying diff: ${e.message}`);
-          return;
-        }
-      }
-      
-      // Otherwise, emit a simple insert event
-      const event = new CustomEvent('ai-apply-code', { 
-        detail: { 
-          code: codeContent,
-          language: language // Pass the detected language
-        } 
-      });
-      window.dispatchEvent(event);
     };
     
     const getLanguageLabel = (lang) => {
@@ -233,7 +353,7 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
           {/* Action buttons - shown on hover */}
           <div className={`flex items-center space-x-2 transition-opacity ${showActions ? 'opacity-100' : 'opacity-0'}`}>
             <button 
-              onClick={applyToEditor}
+              onClick={() => applyToEditor(codeContent)}
               className="flex items-center px-2 py-1 text-xs rounded-md bg-blue-600 hover:bg-blue-700 text-white transition-colors"
               title="Apply to code"
             >
@@ -373,6 +493,43 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  useEffect(() => {
+    if (isOpen && !isInitialized) {
+      initializeUser();
+    }
+  }, [isOpen, isInitialized, initializeUser]);
+
+  useEffect(() => {
+    const saveCurrentConversation = async () => {
+      const activeConv = conversations.find(c => c.isActive);
+      if (!activeConv || !currentUser || messages.length === 0) return;
+      
+      try {
+        await updateConversation(
+          activeConv.id,
+          currentUser._id,
+          messages
+        );
+        
+        // Update the conversation's updatedAt timestamp
+        setConversations(prev => 
+          prev.map(c => 
+            c.id === activeConv.id 
+              ? { ...c, updatedAt: new Date() } 
+              : c
+          )
+        );
+      } catch (error) {
+        console.error('Error saving conversation:', error);
+      }
+    };
+    
+    // Only save if we have messages and a user is logged in
+    if (isInitialized && messages.length > 0 && currentUser) {
+      saveCurrentConversation();
+    }
+  }, [messages, currentUser, conversations, isInitialized]);
+
   if (!isOpen) return null;
 
   return (
@@ -413,6 +570,12 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
               <div className="flex items-center">
                 <FaRegStar className="w-4 h-4 mr-2 text-[#858585]" />
                 <span className="truncate">{conversation.title}</span>
+                <button 
+                  onClick={() => handleDeleteConversation(conversation.id)}
+                  className="ml-auto text-[#858585] hover:text-[#e0e0e0] transition-colors"
+                >
+                  <FaRegTrashAlt className="w-4 h-4" />
+                </button>
               </div>
             </div>
           ))}
@@ -460,9 +623,15 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
         
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messages.map((message) => (
-            <Message key={message.id} message={message} />
-          ))}
+          {loading && messages.length === 0 ? (
+            <div className="flex items-center justify-center h-full">
+              <FaSpinner className="animate-spin text-blue-500 text-2xl" />
+            </div>
+          ) : (
+            messages.map((message) => (
+              <Message key={message.id} message={message} />
+            ))
+          )}
           <div ref={messagesEndRef} />
         </div>
         
