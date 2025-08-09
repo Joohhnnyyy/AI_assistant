@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'prism-react-renderer';
 import { FaCopy, FaCheck, FaCode, FaTerminal } from 'react-icons/fa';
+import { applyGitDiff } from "../api";
 import { 
   FaUser, FaRobot, FaPaperPlane, FaTimes, FaGripLines, 
   FaCog, FaRegLightbulb, FaHistory, FaPlus, FaEllipsisV, 
@@ -71,7 +72,17 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
 
     try {
       console.log('Calling aiComplete with prompt:', input);
-      const response = await aiComplete({ prompt: input });
+      // Build a strong system prompt to steer Gemini towards code-editor behavior
+      const systemPrompt = `You are an in-editor AI coding assistant. Goals:\n- Write high-quality code edits for the user's project.\n- Respond with concise, skimmable Markdown.\n- By default, output the FINAL FILE CONTENT in a single fenced code block with the correct language. Add the first line as a comment containing the relative file path, like: // path: src/file.ts (or # path: file.py).\n- Only return a unified diff (\`\`\`diff) if the user explicitly asks for a diff.\n- Provide a short summary below the code block if needed.\n- Prefer small, focused edits over large rewrites.\n- If unclear, ask one clarifying question.\n- Maintain cycles of correction and improvement if the user provides feedback.\n- NEVER fabricate files or APIs not present in the provided context.`;
+
+      // Include last messages for short-term memory, and (optionally) a few open files when integrated
+      const recent = messages.slice(-8).map(m => ({ role: m.role, content: m.content }));
+
+      const response = await aiComplete({ 
+        prompt: input,
+        history: recent,
+        systemPrompt
+      });
       console.log('Received response from aiComplete:', response);
       
       // Handle both old and new response formats
@@ -116,9 +127,72 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
       setTimeout(() => setCopied(false), 2000);
     };
 
-    const applyToEditor = () => {
-      console.log('Applying code to editor:', codeContent);
-      // You can implement the actual logic to update the editor content
+    const applyToEditor = async () => {
+      // Check for path: comment in the first few lines
+      const pathMatch = codeContent.match(/^\/\/\s*path:\s*([^\s].*?)\s*$/m);
+      
+      if (pathMatch) {
+        // Extract the file path and clean up the code content
+        const filePath = pathMatch[1].trim();
+        const cleanContent = codeContent.replace(/^\/\/\s*path:.*$/m, '').trimStart();
+        
+        try {
+          // Create the file using the filesystem API
+          const response = await fetch('/api/fs/write', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: filePath, content: cleanContent })
+          });
+          
+          const result = await response.json();
+          
+          if (response.ok) {
+            alert(`File created successfully at: ${filePath}`);
+            // Trigger a refresh of the file tree
+            window.dispatchEvent(new CustomEvent('refresh-filetree'));
+          } else {
+            alert(`Failed to create file: ${result.error || 'Unknown error'}`);
+          }
+          return;
+        } catch (e) {
+          console.error('File creation error:', e);
+          alert(`Error creating file: ${e.message}`);
+          return;
+        }
+      }
+      
+      // If content looks like a unified diff, offer to apply via git apply
+      const looksLikeDiff = /^(---\s+a\/|\+\+\+\s+b\/|@@\s)/m.test(codeContent);
+      if (looksLikeDiff) {
+        try {
+          // Try several -p levels server-side to avoid manual editing
+          const dry = await applyGitDiff(codeContent, { dryRun: true });
+          if (dry?.ok === false) {
+            alert(`Diff failed dry-run:\n${dry.stderr || dry.stdout || 'Unknown error'}`);
+            return;
+          }
+          const res = await applyGitDiff(codeContent, { dryRun: false });
+          if (res?.ok) {
+            alert('Diff applied successfully');
+          } else {
+            alert(`Failed to apply diff:\n${res?.stderr || res?.stdout || 'Unknown error'}`);
+          }
+          return;
+        } catch (e) {
+          console.error('Apply diff error:', e);
+          alert(`Error applying diff: ${e.message}`);
+          return;
+        }
+      }
+      
+      // Otherwise, emit a simple insert event
+      const event = new CustomEvent('ai-apply-code', { 
+        detail: { 
+          code: codeContent,
+          language: language // Pass the detected language
+        } 
+      });
+      window.dispatchEvent(event);
     };
     
     const getLanguageLabel = (lang) => {
@@ -214,6 +288,29 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
   };
 
   const Message = ({ message, onApplyCode }) => {
+    const splitIntoSegments = (raw) => {
+      if (typeof raw !== 'string') return [{ type: 'text', text: '' }];
+      const fenceCount = (raw.match(/```/g) || []).length;
+      let content = fenceCount % 2 === 1 ? raw + '\n```' : raw;
+      const regex = /```(\w+)?\n([\s\S]*?)```/g;
+      const segments = [];
+      let lastIndex = 0;
+      let m;
+      while ((m = regex.exec(content)) !== null) {
+        if (m.index > lastIndex) {
+          segments.push({ type: 'text', text: content.slice(lastIndex, m.index) });
+        }
+        segments.push({ type: 'code', lang: m[1] || '', code: m[2] || '' });
+        lastIndex = regex.lastIndex;
+      }
+      if (lastIndex < content.length) {
+        segments.push({ type: 'text', text: content.slice(lastIndex) });
+      }
+      return segments;
+    };
+
+    const segments = splitIntoSegments(message.content);
+
     return (
       <div className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} mb-4`}>
         <div 
@@ -242,28 +339,25 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
                 {new Date(message.timestamp).toLocaleTimeString()}
               </span>
             </div>
-            
-            <div className="prose prose-sm dark:prose-invert max-w-none">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  code({node, inline, className, children, ...props}) {
-                    return !inline ? (
-                      <CodeBlock className={className} {...props}>
-                        {children}
-                      </CodeBlock>
-                    ) : (
-                      <code className={className} {...props}>
-                        {children}
-                      </code>
-                    );
-                  }
-                }}
-              >
-                {message.content}
-              </ReactMarkdown>
-            </div>
-            
+
+            {segments.map((seg, idx) => (
+              seg.type === 'code' ? (
+                <div key={idx} className="my-3">
+                  <CodeBlock className={`language-${seg.lang || 'text'}`}>
+                    {seg.code}
+                  </CodeBlock>
+                </div>
+              ) : (
+                seg.text.trim() ? (
+                  <div key={idx} className="prose prose-sm dark:prose-invert max-w-none">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {seg.text}
+                    </ReactMarkdown>
+                  </div>
+                ) : null
+              )
+            ))}
+
             {message.usage && (
               <div className="text-xs opacity-50 mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">
                 Tokens: {message.usage.totalTokens} (Prompt: {message.usage.promptTokens}, Completion: {message.usage.completionTokens})

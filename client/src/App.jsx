@@ -1,13 +1,24 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import Editor from "@monaco-editor/react";
 import { BsLightningChargeFill } from 'react-icons/bs';
+import { FaPlay } from 'react-icons/fa';
 import NewAIChatPanel from "./components/NewAIChatPanel";
 import useEditorHotkeys from "./hooks/useHotkeys";
+import FileTree from "./components/FileTree";
+import TabsBar from "./components/TabsBar";
+import RunPanel from "./components/RunPanel";
+import { fsRead, fsWrite } from "./api";
 
 export default function App() {
   const [isAIPanelOpen, setIsAIPanelOpen] = useState(true);
   const [editorValue, setEditorValue] = useState("// Start coding!\n");
   const [selectedText, setSelectedText] = useState("");
+  const [openTabs, setOpenTabs] = useState([]); // [{ path, title }]
+  const [activePath, setActivePath] = useState("");
+  const [filesByPath, setFilesByPath] = useState({}); // path -> content
+  const [showRun, setShowRun] = useState(false);
+  const [explorerCollapsed, setExplorerCollapsed] = useState(false);
+  const [runTrigger, setRunTrigger] = useState(0);
 
   // Hotkey actions
   useEditorHotkeys({
@@ -34,6 +45,80 @@ export default function App() {
     });
   };
 
+  // Handle AI "Apply" events to insert code into the active file (end of file)
+  useEffect(() => {
+    const handler = (e) => {
+      const code = e.detail?.code ?? "";
+      if (!code) return;
+      if (!activePath) return;
+      setFilesByPath(prev => ({ ...prev, [activePath]: (prev[activePath] ?? "") + "\n" + String(code) }));
+    };
+    window.addEventListener('ai-apply-code', handler);
+    return () => window.removeEventListener('ai-apply-code', handler);
+  }, [activePath]);
+
+  const getLanguageFromPath = (path) => {
+    if (!path) return "javascript";
+    const ext = path.split('.').pop().toLowerCase();
+    const map = {
+      js: "javascript",
+      mjs: "javascript",
+      cjs: "javascript",
+      jsx: "javascript",
+      ts: "typescript",
+      tsx: "typescript",
+      json: "json",
+      md: "markdown",
+      html: "html",
+      css: "css",
+      py: "python",
+      sh: "shell",
+      yml: "yaml",
+      yaml: "yaml",
+      java: "java",
+      go: "go",
+      c: "c",
+      cc: "cpp",
+      cpp: "cpp",
+      cxx: "cpp",
+      rs: "rust",
+    };
+    return map[ext] || "plaintext";
+  };
+
+  const handleOpenFile = async (path) => {
+    try {
+      // If not already loaded, fetch
+      if (filesByPath[path] === undefined) {
+        const res = await fsRead(path);
+        setFilesByPath(prev => ({ ...prev, [path]: res.content ?? "" }));
+      }
+      // Add tab if not present
+      setOpenTabs(prev => prev.find(t => t.path === path) ? prev : [...prev, { path, title: path.split('/').pop() }]);
+      setActivePath(path);
+    } catch (e) {
+      console.error("Open file failed:", e);
+    }
+  };
+
+  const handleActivateTab = (path) => setActivePath(path);
+  const handleCloseTab = (path) => {
+    setOpenTabs(prev => prev.filter(t => t.path !== path));
+    if (activePath === path) {
+      const remaining = openTabs.filter(t => t.path !== path);
+      setActivePath(remaining[remaining.length - 1]?.path || "");
+    }
+  };
+
+  const handleSave = async () => {
+    if (!activePath) return;
+    try {
+      await fsWrite(activePath, filesByPath[activePath] ?? "");
+    } catch (e) {
+      console.error("Save failed:", e);
+    }
+  };
+
   return (
     <div className="h-screen w-screen flex flex-col bg-[#1e1e1e] text-[#e0e0e0] overflow-hidden">
       {/* Top Navigation */}
@@ -48,6 +133,18 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center space-x-3">
+          <button
+            className="text-xs bg-[#16a34a] hover:bg-[#15803d] px-3 py-1.5 rounded-md flex items-center space-x-1.5 transition-colors"
+            onClick={() => {
+              if (!showRun) setShowRun(true);
+              // bump trigger to auto-run current file
+              setRunTrigger((x) => x + 1);
+            }}
+            title="Run Active File"
+          >
+            <FaPlay className="w-3 h-3" />
+            <span>Run</span>
+          </button>
           <button 
             className="text-xs bg-[#0d6efd] hover:bg-[#0b5ed7] px-3 py-1.5 rounded-md flex items-center space-x-1.5 transition-colors"
             onClick={() => setIsAIPanelOpen(!isAIPanelOpen)}
@@ -66,6 +163,7 @@ export default function App() {
             <button 
               className="p-2 text-[#858585] hover:text-[#e0e0e0] hover:bg-[#2d2d2d] rounded-md transition-colors relative group"
               title="Explorer (Ctrl+Shift+E)"
+              onClick={() => setExplorerCollapsed((c) => !c)}
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6h16M4 12h16M4 18h16" />
@@ -115,29 +213,36 @@ export default function App() {
           </div>
         </div>
 
+        {/* File Explorer Panel */}
+        {!explorerCollapsed && (
+          <div className="w-64 bg-[#1e1e1e] border-r border-[#1e1e1e] flex-shrink-0">
+            <FileTree onOpen={handleOpenFile} onToggleCollapse={() => setExplorerCollapsed(true)} />
+          </div>
+        )}
+
         {/* Editor Area */}
         <div className="flex-1 flex flex-col overflow-hidden">
           {/* Editor Tabs */}
-          <div className="h-9 bg-[#252526] flex items-center border-b border-[#1e1e1e] px-2">
-            <div className="flex items-center h-full px-3 border-b-2 border-[#0d6efd] text-[#e0e0e0] text-sm">
-              <svg className="w-4 h-4 mr-2 text-[#6a9955]" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M13 3H6v18l7-6v-4.5l7-6V9l-7 6V3z" />
-              </svg>
-              index.js
-            </div>
-            <div className="flex items-center h-full px-3 text-[#858585] hover:text-[#e0e0e0] text-sm cursor-pointer">
-              <svg className="w-4 h-4 mr-2 text-[#569cd6]" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 8V3.5L18.5 10H13zm-2 9l-4-4h3v-3h2v3h3l-4 4z" />
-              </svg>
-              package.json
-            </div>
-          </div>
+          <TabsBar 
+            tabs={openTabs}
+            activePath={activePath}
+            onActivate={handleActivateTab}
+            onClose={handleCloseTab}
+          />
           
           <div className="flex-1 overflow-hidden">
             <Editor
-              height="100%"
-              defaultLanguage="javascript"
-              defaultValue={editorValue}
+              height={showRun ? "60%" : "100%"}
+              language={getLanguageFromPath(activePath)}
+              path={activePath || "untitled.js"}
+              value={activePath ? (filesByPath[activePath] ?? "") : editorValue}
+              onChange={(val) => {
+                if (activePath) {
+                  setFilesByPath(prev => ({ ...prev, [activePath]: val ?? "" }));
+                } else {
+                  setEditorValue(val ?? "");
+                }
+              }}
               theme="vs-dark"
               onMount={handleEditorDidMount}
               options={{
@@ -162,6 +267,19 @@ export default function App() {
                 }
               }}
             />
+            {showRun && (
+              <div className="h-[40%] border-t border-[#1e1e1e]">
+                <RunPanel 
+                  defaultCmd={getLanguageFromPath(activePath) === 'python' ? 'python' : 'node'}
+                  defaultArgs={[activePath || 'index.js']}
+                  cwd={'.'}
+                  language={getLanguageFromPath(activePath)}
+                  activePath={activePath}
+                  onSave={handleSave}
+                  trigger={runTrigger}
+                />
+              </div>
+            )}
           </div>
         </div>
 
@@ -190,7 +308,21 @@ export default function App() {
             <span>JavaScript</span>
           </div>
         </div>
-        <div className="flex items-center space-x-4">
+        <div className="flex items-center space-x-2">
+          <button 
+            className="text-xs bg-[#2d2d2d] hover:bg-[#3c3c3c] text-[#e0e0e0] px-3 py-1.5 rounded-md border border-[#3c3c3c]"
+            onClick={handleSave}
+          >Save</button>
+          <button 
+            className="text-xs bg-[#2d2d2d] hover:bg-[#3c3c3c] text-[#e0e0e0] px-3 py-1.5 rounded-md border border-[#3c3c3c]"
+            onClick={() => setShowRun((s) => !s)}
+          >{showRun ? 'Hide Run' : 'Run'}</button>
+          {explorerCollapsed && (
+            <button 
+              className="text-xs bg-[#2d2d2d] hover:bg-[#3c3c3c] text-[#e0e0e0] px-3 py-1.5 rounded-md border border-[#3c3c3c]"
+              onClick={() => setExplorerCollapsed(false)}
+            >Show Explorer</button>
+          )}
           <div className="cursor-pointer hover:bg-[#1a8fe6] h-full px-2 -mx-2 flex items-center">
             <span>Ln 1, Col 1</span>
           </div>

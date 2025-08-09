@@ -1,16 +1,18 @@
 import express from "express";
 import fetch from "node-fetch";
+import { readFilesForContext } from "./fs.js";
 
 const router = express.Router();
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-// Using gemini-2.0-flash as requested
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent`;
-const GEMINI_LIST_MODELS_URL = `https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}`;
+const GEMINI_LIST_MODELS_URL = `https://generativelanguage.googleapis.com/v1beta/models`;
 
 // List available Gemini models
 router.get("/models", async (req, res) => {
   try {
-    const response = await fetch(GEMINI_LIST_MODELS_URL);
+    const response = await fetch(GEMINI_LIST_MODELS_URL, {
+      headers: { 'x-goog-api-key': GEMINI_API_KEY }
+    });
     let data;
     try {
       data = await response.json();
@@ -23,97 +25,76 @@ router.get("/models", async (req, res) => {
   }
 });
 
+// Simple diagnostics to verify key presence without revealing it
+router.get("/debug", (req, res) => {
+  try {
+    const present = Boolean(GEMINI_API_KEY && String(GEMINI_API_KEY).trim());
+    const length = present ? String(GEMINI_API_KEY).trim().length : 0;
+    res.json({ hasKey: present, keyLength: length, modelEndpoint: GEMINI_API_URL.split('?')[0] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // AI completion endpoint
 router.post("/complete", async (req, res) => {
-  console.log('Received request body:', req.body);
-  const { prompt, history = [] } = req.body;
+  const { prompt, history = [], files = [], systemPrompt, filePaths = [] } = req.body;
   
   if (!prompt) {
-    console.error('Error: No prompt provided in request body');
-    return res.status(400).json({ 
-      error: "Prompt is required",
-      receivedBody: req.body,
-      timestamp: new Date().toISOString()
-    });
+    return res.status(400).json({ error: "Prompt is required" });
   }
 
   try {
     console.log("Sending request to Gemini API with prompt:", prompt);
-    console.log("Using API key:", GEMINI_API_KEY ? '*** (key exists)' : 'MISSING API KEY');
-    
-    // Prepare the messages array with just the current prompt
-    // Gemini 2.0 Flash has a simpler format than the previous version
-    const requestBody = {
-      contents: [
-        {
-          role: "user",
-          parts: [{
-            text: prompt
-          }]
-        }
-      ],
-      generationConfig: {
-        temperature: 0.9,
-        topK: 1,
-        topP: 1,
-        maxOutputTokens: 2048,
-        stopSequences: []
-      },
-      safetySettings: [
-        {
-          category: "HARM_CATEGORY_HARASSMENT",
-          threshold: "BLOCK_MEDIUM_AND_ABOVE"
-        },
-        {
-          category: "HARM_CATEGORY_HATE_SPEECH",
-          threshold: "BLOCK_MEDIUM_AND_ABOVE"
-        },
-        {
-          category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-          threshold: "BLOCK_MEDIUM_AND_ABOVE"
-        },
-        {
-          category: "HARM_CATEGORY_DANGEROUS_CONTENT",
-          threshold: "BLOCK_MEDIUM_AND_ABOVE"
-        }
-      ]
-    };
+    // If filePaths provided, load contents from disk
+    let fileParts = [];
+    if (Array.isArray(filePaths) && filePaths.length > 0) {
+      try {
+        fileParts = await readFilesForContext(filePaths);
+      } catch {}
+    }
 
-    console.log("Sending request to:", GEMINI_API_URL);
-    console.log("Request body:", JSON.stringify(requestBody, null, 2));
-
-    const apiUrl = `${GEMINI_API_URL}?key=${GEMINI_API_KEY}`;
-    console.log('Full Gemini API URL:', apiUrl);
-    
-    const response = await fetch(apiUrl, {
+    const response = await fetch(GEMINI_API_URL, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY
       },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify({
+        contents: [
+          // Optional system message to steer behavior
+          ...(systemPrompt ? [{ role: "user", parts: [{ text: `SYSTEM:\n${systemPrompt}` }] }] : []),
+          // Prior chat turns (role: user/ai)
+          ...history.map(m => ({ role: m.role === 'ai' ? 'model' : 'user', parts: [{ text: m.content }]})),
+          // Code context (selected files)
+          ...(Array.isArray(files) && files.length > 0 ? [{
+            role: "user",
+            parts: [{ text: `PROJECT CONTEXT (read-only):\n` + files.map(f => `--- file: ${f.path}\n${f.content ?? ''}`).join('\n\n') }]
+          }] : []),
+          ...(fileParts.length > 0 ? [{
+            role: "user",
+            parts: [{ text: `PROJECT FILES FROM DISK:\n` + fileParts.map(f => `--- file: ${f.path}\n${f.content ?? ''}`).join('\n\n') }]
+          }] : []),
+          // The current instruction
+          { role: "user", parts: [{ text: prompt }] }
+        ],
+        generationConfig: {
+          temperature: 0.7,
+          topK: 40,
+          topP: 0.95,
+          maxOutputTokens: 1024
+        }
+      })
     });
     
     const responseText = await response.text();
     console.log("Gemini API response status:", response.status);
-    console.log("Gemini API response headers:", JSON.stringify([...response.headers.entries()]));
-    console.log("Gemini API response body (first 1000 chars):", responseText.substring(0, 1000));
-    console.log("Response content type:", response.headers.get('content-type'));
-    console.log("Response ok:", response.ok);
-    
-    if (!response.ok) {
-      console.error(`Gemini API error: ${response.status} ${response.statusText}`);
-      return res.status(502).json({ 
-        error: `Gemini API error: ${response.status} ${response.statusText}`,
-        details: responseText,
-        status: response.status,
-        statusText: response.statusText
-      });
-    }
+    console.log("Gemini API response:", responseText);
     
     let data;
     try {
       data = JSON.parse(responseText);
-      console.log("Parsed response data:", JSON.stringify(data, null, 2));
+      console.log("Parsed response data:", data);
     } catch (e) {
       console.error("Error parsing Gemini API response:", e);
       return res.status(502).json({ 
@@ -124,24 +105,8 @@ router.post("/complete", async (req, res) => {
       });
     }
     
-    // Handle the response from Gemini Pro API
     if (data.candidates && data.candidates[0] && data.candidates[0].content) {
-      const result = data.candidates[0].content.parts[0].text;
-      console.log("Extracted response text:", result.substring(0, 100) + (result.length > 100 ? '...' : ''));
-      res.json({ 
-        text: result,
-        usage: {
-          promptTokens: data.usageMetadata?.promptTokenCount || 0,
-          completionTokens: data.usageMetadata?.candidatesTokenCount || 0,
-          totalTokens: data.usageMetadata?.totalTokenCount || 0
-        }
-      });
-    } else if (data.error) {
-      console.error("Gemini API returned an error:", data.error);
-      res.status(502).json({ 
-        error: data.error.message || "Error from Gemini API",
-        details: data.error
-      });
+      res.json({ result: data.candidates[0].content.parts[0].text });
     } else {
       console.error("Unexpected response format from Gemini API:", data);
       res.status(502).json({ 

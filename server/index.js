@@ -5,6 +5,8 @@ import bodyParser from "body-parser";
 import aiRouter from "./routes/ai.js";
 import templatesRouter from "./routes/templates.js";
 import gitRouter from "./routes/git.js";
+import fsRouter from "./routes/fs.js";
+import runRouter from "./routes/run.js";
 
 const app = express();
 app.use(cors());
@@ -23,6 +25,8 @@ app.get("/api/health", (req, res) => {
 app.use("/api/ai", aiRouter);
 app.use("/api/templates", templatesRouter);
 app.use("/api/git", gitRouter);
+app.use("/api/fs", fsRouter);
+app.use("/api/run", runRouter);
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
