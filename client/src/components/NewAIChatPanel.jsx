@@ -1,12 +1,12 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { aiComplete } from "../api";
+import { aiComplete, uploadImage, getUploadedImages } from "../api";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'prism-react-renderer';
-import { FaCopy, FaCheck, FaCode, FaTerminal, FaSpinner } from 'react-icons/fa';
+import { FaCopy, FaCheck, FaCode, FaTerminal, FaSpinner, FaImage, FaUpload, FaTimes } from 'react-icons/fa';
 import { applyGitDiff } from "../api";
 import { 
-  FaUser, FaRobot, FaPaperPlane, FaTimes, FaGripLines, 
+  FaUser, FaRobot, FaPaperPlane, FaGripLines, 
   FaCog, FaRegLightbulb, FaHistory, FaPlus, FaEllipsisV, 
   FaSearch, FaChevronDown, FaRegTrashAlt, FaRegEdit, FaRegClone, FaRegStar, FaRegFileAlt 
 } from 'react-icons/fa';
@@ -16,6 +16,7 @@ import {
   getConversation,
   createConversation,
   updateConversation,
+  updateConversationTitle,
   deleteConversation
 } from '../api/auth';
 
@@ -28,8 +29,18 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
   const [showConversationMenu, setShowConversationMenu] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(null);
+  const [editTitleValue, setEditTitleValue] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSearch, setShowSearch] = useState(false);
+  const [uploadedImages, setUploadedImages] = useState([]);
+  const [showImageGallery, setShowImageGallery] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [imageDataMap, setImageDataMap] = useState(new Map()); // Store image data for AI
   const messagesEndRef = useRef(null);
   const panelRef = useRef(null);
+  const fileInputRef = useRef(null);
   const activeConversation = conversations.find(c => c.isActive)?.id || null;
 
   // Initialize user and load conversations
@@ -40,17 +51,19 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
       setCurrentUser(user);
       
       // Load user's conversations
-      const userConversations = await getUserConversations(user._id);
+      const userConversations = await getUserConversations(user.userId);
       setConversations(userConversations.map(conv => ({
         id: conv._id,
         title: conv.title,
         isActive: false,
-        updatedAt: new Date(conv.updatedAt)
+        updatedAt: new Date(conv.updatedAt),
+        isServerConversation: true
       })));
       
       // If no conversations, create a default one
       if (userConversations.length === 0) {
-        const newConv = await createConversation(user._id, 'New Chat');
+        try {
+          const newConv = await createConversation(user.userId, 'New Chat');
         setConversations([{
           id: newConv._id,
           title: newConv.title,
@@ -58,6 +71,24 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
           updatedAt: new Date(newConv.updatedAt)
         }]);
         setMessages(newConv.messages || []);
+        } catch (convError) {
+          console.warn('Could not create default conversation, using fallback:', convError);
+          // Create a local fallback conversation
+          setConversations([{
+            id: 'fallback-1',
+            title: 'New Chat',
+            isActive: true,
+            updatedAt: new Date(),
+            isServerConversation: false
+          }]);
+          setMessages([{ 
+            id: '1', 
+            role: 'ai', 
+            content: 'Hello! I\'m your AI coding assistant. How can I help you today?', 
+            timestamp: new Date(),
+            isError: false 
+          }]);
+        }
       } else {
         // Load the most recent conversation
         const mostRecent = userConversations[0];
@@ -72,10 +103,21 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
     } catch (error) {
       console.error('Error initializing user:', error);
       // Fallback to local state if API fails
+      setCurrentUser({
+        userId: `fallback-${Date.now()}`,
+        username: 'Anonymous User'
+      });
+      setConversations([{
+        id: 'fallback-1',
+        title: 'New Chat',
+        isActive: true,
+        updatedAt: new Date(),
+        isServerConversation: false
+      }]);
       setMessages([{ 
         id: '1', 
         role: 'ai', 
-        content: 'Hello! I\'m your AI coding assistant. How can I help you today?', 
+        content: 'Hello! I\'m your AI coding assistant. How can I help you today? (Note: Running in offline mode)', 
         timestamp: new Date(),
         isError: false 
       }]);
@@ -91,7 +133,7 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
     
     try {
       setLoading(true);
-      const conversation = await getConversation(conversationId, currentUser._id);
+      const conversation = await getConversation(conversationId, currentUser.userId);
       
       setConversations(prev => 
         prev.map(c => ({
@@ -103,7 +145,9 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
       setMessages(conversation.messages || []);
     } catch (error) {
       console.error('Error loading conversation:', error);
-      alert('Failed to load conversation. Please try again.');
+      window.dispatchEvent(new CustomEvent('show-notification', { 
+        detail: { message: 'Failed to load conversation. Please try again.', type: 'error' }
+      }));
     } finally {
       setLoading(false);
     }
@@ -115,14 +159,15 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
     
     try {
       setLoading(true);
-      const newConv = await createConversation(currentUser._id, 'New Chat');
+      const newConv = await createConversation(currentUser.userId, 'New Chat');
       
       setConversations(prev => [
         {
           id: newConv._id,
           title: newConv.title,
           isActive: true,
-          updatedAt: new Date(newConv.updatedAt)
+          updatedAt: new Date(newConv.updatedAt),
+          isServerConversation: true
         },
         ...prev.map(c => ({ ...c, isActive: false }))
       ]);
@@ -130,87 +175,45 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
       setMessages(newConv.messages || []);
     } catch (error) {
       console.error('Error creating new conversation:', error);
-      alert('Failed to create a new conversation. Please try again.');
+      window.dispatchEvent(new CustomEvent('show-notification', { 
+        detail: { message: 'Failed to create a new conversation. Please try again.', type: 'error' }
+      }));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSend = async (e) => {
-    if (e) e.preventDefault();
-    console.log('handleSend called with input:', input);
-    if (!input.trim() || loading) {
-      console.log('Not sending - empty input or already loading');
-      return;
-    }
 
-    const userMessage = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: input,
-      timestamp: new Date(),
-      isError: false
-    };
-
-    console.log('Adding user message to UI:', userMessage);
-    setMessages(prev => [...prev, userMessage]);
-    setInput("");
-    setLoading(true);
-
-    try {
-      console.log('Calling aiComplete with prompt:', input);
-      // Build a strong system prompt to steer Gemini towards code-editor behavior
-      const systemPrompt = `You are an in-editor AI coding assistant. Goals:\n- Write high-quality code edits for the user's project.\n- Respond with concise, skimmable Markdown.\n- By default, output the FINAL FILE CONTENT in a single fenced code block with the correct language. Add the first line as a comment containing the relative file path, like: // path: src/file.ts (or # path: file.py).\n- Only return a unified diff (\`\`\`diff) if the user explicitly asks for a diff.\n- Provide a short summary below the code block if needed.\n- Prefer small, focused edits over large rewrites.\n- If unclear, ask one clarifying question.\n- Maintain cycles of correction and improvement if the user provides feedback.\n- NEVER fabricate files or APIs not present in the provided context.`;
-
-      // Include last messages for short-term memory, and (optionally) a few open files when integrated
-      const recent = messages.slice(-8).map(m => ({ role: m.role, content: m.content }));
-
-      const response = await aiComplete({ 
-        prompt: input,
-        history: recent,
-        systemPrompt
-      });
-      console.log('Received response from aiComplete:', response);
-      
-      // Handle both old and new response formats
-      const responseText = response.text || response.result || 'No response from AI';
-      console.log('Response text:', responseText);
-      
-      const aiMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'ai',
-        content: responseText,
-        timestamp: new Date(),
-        isError: false,
-        usage: response.usage || null
-      };
-      setMessages(prev => [...prev, aiMessage]);
-    } catch (error) {
-      console.error('Error sending message:', error);
-      const errorMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'ai',
-        content: 'Sorry, I encountered an error processing your request.',
-        timestamp: new Date(),
-        isError: true
-      };
-      setMessages(prev => [...prev, errorMessage]);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleDeleteConversation = async (id) => {
     if (!currentUser) return;
     
     // Don't allow deleting the last conversation
     if (conversations.length <= 1) {
-      alert('You must have at least one conversation');
+      window.dispatchEvent(new CustomEvent('show-notification', { 
+        detail: { message: 'You must have at least one conversation', type: 'error' }
+      }));
+      return;
+    }
+    
+    // Don't try to delete fallback conversations (they don't exist on the server)
+    if (id.startsWith('fallback-')) {
+      console.log('Skipping delete for fallback conversation:', id);
+      // Just remove from local state
+      setConversations(prev => 
+        prev
+          .filter(conv => conv.id !== id)
+          .map((conv, idx) => ({
+            ...conv,
+            isActive: idx === 0
+          }))
+      );
+      setMessages([]);
       return;
     }
     
     try {
-      await deleteConversation(id, currentUser._id);
+      await deleteConversation(id, currentUser.userId);
       
       // Find the next conversation to activate
       const currentIndex = conversations.findIndex(c => c.id === id);
@@ -234,8 +237,383 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
       
     } catch (error) {
       console.error('Error deleting conversation:', error);
-      alert('Failed to delete conversation. Please try again.');
+      window.dispatchEvent(new CustomEvent('show-notification', { 
+        detail: { message: 'Failed to delete conversation. Please try again.', type: 'error' }
+      }));
     }
+  };
+
+  const handleEditTitle = (conversation) => {
+    setEditingTitle(conversation.id);
+    setEditTitleValue(conversation.title);
+  };
+
+  const handleSaveTitle = async (conversationId) => {
+    if (!currentUser || !editTitleValue.trim()) return;
+    
+    // Don't try to update titles for fallback conversations
+    if (conversationId.startsWith('fallback-')) {
+      console.log('Skipping title update for fallback conversation:', conversationId);
+      // Just update local state
+      setConversations(prev => 
+        prev.map(c => 
+          c.id === conversationId 
+            ? { ...c, title: editTitleValue.trim() } 
+            : c
+        )
+      );
+      setEditingTitle(null);
+      setEditTitleValue('');
+      return;
+    }
+    
+    try {
+      await updateConversationTitle(conversationId, currentUser.userId, editTitleValue.trim());
+      
+      // Update local state
+      setConversations(prev => 
+        prev.map(c => 
+          c.id === conversationId 
+            ? { ...c, title: editTitleValue.trim() } 
+            : c
+        )
+      );
+      
+      setEditingTitle(null);
+      setEditTitleValue('');
+      
+      window.dispatchEvent(new CustomEvent('show-notification', { 
+        detail: { message: 'Title updated successfully', type: 'success' }
+      }));
+    } catch (error) {
+      console.error('Error updating title:', error);
+      window.dispatchEvent(new CustomEvent('show-notification', { 
+        detail: { message: 'Failed to update title', type: 'error' }
+      }));
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingTitle(null);
+    setEditTitleValue('');
+  };
+
+  const handleImageUpload = async (event) => {
+    const files = Array.from(event.target.files);
+    if (files.length === 0) return;
+
+    // Filter and validate image files
+    const imageFiles = files.filter(file => {
+      if (!file.type.startsWith('image/')) {
+        window.dispatchEvent(new CustomEvent('show-notification', { 
+          detail: { message: `${file.name} is not an image file`, type: 'error' }
+        }));
+        return false;
+      }
+      
+      if (file.size > 10 * 1024 * 1024) {
+        window.dispatchEvent(new CustomEvent('show-notification', { 
+          detail: { message: `${file.name} is too large (max 10MB)`, type: 'error' }
+        }));
+        return false;
+      }
+      
+      return true;
+    });
+
+    if (imageFiles.length === 0) return;
+
+    try {
+      setUploadingImage(true);
+      
+      // Upload each image
+      for (const file of imageFiles) {
+        const result = await uploadImage(file);
+        
+        if (result.success) {
+          // Convert image to base64 for AI processing
+          const base64Data = await convertImageToBase64(file);
+          const imageInfo = {
+            data: base64Data,
+            mimeType: file.type,
+            alt: file.name
+          };
+          
+          // Store image data for AI processing
+          setImageDataMap(prev => new Map(prev).set(result.url, imageInfo));
+          
+          // Add image reference to input
+          const imageRef = `![${file.name}](${result.url})`;
+          setInput(prev => prev + (prev ? '\n' : '') + imageRef);
+          
+          window.dispatchEvent(new CustomEvent('show-notification', { 
+            detail: { message: `${file.name} uploaded successfully`, type: 'success' }
+          }));
+        } else {
+          throw new Error(result.error || 'Upload failed');
+        }
+      }
+      
+      // Refresh image gallery
+      loadUploadedImages();
+      
+    } catch (error) {
+      console.error('Image upload error:', error);
+      window.dispatchEvent(new CustomEvent('show-notification', { 
+        detail: { message: `Failed to upload image: ${error.message}`, type: 'error' }
+      }));
+    } finally {
+      setUploadingImage(false);
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const loadUploadedImages = async () => {
+    try {
+      const result = await getUploadedImages();
+      if (result.images) {
+        setUploadedImages(result.images);
+      }
+    } catch (error) {
+      console.error('Error loading images:', error);
+    }
+  };
+
+  const insertImageReference = async (imageUrl, filename) => {
+    const imageRef = `![${filename}](${imageUrl})`;
+    setInput(prev => prev + (prev ? '\n' : '') + imageRef);
+    setShowImageGallery(false);
+    
+    // If we don't have the image data cached, fetch and store it
+    if (!imageDataMap.has(imageUrl)) {
+      try {
+        const response = await fetch(imageUrl);
+        const blob = await response.blob();
+        const base64 = await convertImageToBase64(blob);
+        
+        const imageInfo = {
+          data: base64,
+          mimeType: blob.type || 'image/png',
+          alt: filename
+        };
+        
+        setImageDataMap(prev => new Map(prev).set(imageUrl, imageInfo));
+      } catch (error) {
+        console.error('Error fetching image data:', error);
+      }
+    }
+  };
+
+  const removeImageReference = (imageUrl) => {
+    setInput(prev => prev.replace(new RegExp(`!\\[.*?\\]\\(${imageUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`, 'g'), ''));
+  };
+
+  const convertImageToBase64 = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const getImageDataForAI = async () => {
+    const imageRefs = input.match(/!\[([^\]]*)\]\(([^)]+)\)/g) || [];
+    console.log('Found image references:', imageRefs);
+    const imageData = [];
+    
+    for (const ref of imageRefs) {
+      const match = ref.match(/!\[([^\]]*)\]\(([^)]+)\)/);
+      if (match) {
+        const [, alt, url] = match;
+        console.log('Processing image:', { alt, url });
+        
+        // Check if we have the image data cached
+        if (imageDataMap.has(url)) {
+          console.log('Using cached image data for:', url);
+          imageData.push(imageDataMap.get(url));
+        } else {
+          // Try to fetch the image and convert to base64
+          try {
+            console.log('Fetching image from:', url);
+            const response = await fetch(url);
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            const blob = await response.blob();
+            console.log('Image blob size:', blob.size, 'type:', blob.type);
+            const base64 = await convertImageToBase64(blob);
+            
+            const imageInfo = {
+              data: base64,
+              mimeType: blob.type || 'image/png',
+              alt: alt || 'Uploaded image'
+            };
+            
+            console.log('Successfully processed image:', imageInfo.alt);
+            
+            // Cache the image data
+            setImageDataMap(prev => new Map(prev).set(url, imageInfo));
+            imageData.push(imageInfo);
+          } catch (error) {
+            console.error('Error converting image to base64:', error);
+          }
+        }
+      }
+    }
+    
+    console.log('Returning image data:', imageData.length, 'images');
+    return imageData;
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setDragOver(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    
+    const files = Array.from(e.dataTransfer.files);
+    const imageFiles = files.filter(file => file.type.startsWith('image/'));
+    
+    if (imageFiles.length === 0) {
+      window.dispatchEvent(new CustomEvent('show-notification', { 
+        detail: { message: 'Please drop image files only', type: 'error' }
+      }));
+      return;
+    }
+    
+    // Upload the first image file
+    if (imageFiles[0]) {
+      const event = { target: { files: [imageFiles[0]] } };
+      handleImageUpload(event);
+    }
+  };
+
+  const exportChatHistory = () => {
+    const activeConv = conversations.find(c => c.isActive);
+    if (!activeConv || messages.length === 0) {
+      window.dispatchEvent(new CustomEvent('show-notification', { 
+        detail: { message: 'No conversation to export', type: 'error' }
+      }));
+      return;
+    }
+
+    const chatData = {
+      title: activeConv.title,
+      exportDate: new Date().toISOString(),
+      messages: messages.map(msg => ({
+        role: msg.role,
+        content: msg.content,
+        timestamp: msg.timestamp,
+        isError: msg.isError
+      }))
+    };
+
+    const blob = new Blob([JSON.stringify(chatData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${activeConv.title.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_chat_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    window.dispatchEvent(new CustomEvent('show-notification', { 
+      detail: { message: 'Chat history exported successfully', type: 'success' }
+    }));
+  };
+
+  const importChatHistory = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      try {
+        const text = await file.text();
+        const chatData = JSON.parse(text);
+        
+        if (!chatData.messages || !Array.isArray(chatData.messages)) {
+          throw new Error('Invalid chat history format');
+        }
+
+        // Create a new conversation with the imported data
+        if (currentUser) {
+          const newConv = await createConversation(
+            currentUser.userId, 
+            chatData.title || 'Imported Chat',
+            chatData.messages[0]?.content || null
+          );
+
+          // Set the imported messages
+          const importedMessages = chatData.messages.map(msg => ({
+            id: Date.now() + Math.random().toString(36).substr(2, 9),
+            role: msg.role,
+            content: msg.content,
+            timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+            isError: msg.isError || false
+          }));
+
+          // Add to conversations list
+          setConversations(prev => [
+            {
+              id: newConv._id,
+              title: newConv.title,
+              isActive: true,
+              updatedAt: new Date(newConv.updatedAt)
+            },
+            ...prev.map(c => ({ ...c, isActive: false }))
+          ]);
+
+          // Set messages
+          setMessages(importedMessages);
+
+          window.dispatchEvent(new CustomEvent('show-notification', { 
+            detail: { message: 'Chat history imported successfully', type: 'success' }
+          }));
+        }
+      } catch (error) {
+        console.error('Error importing chat history:', error);
+        window.dispatchEvent(new CustomEvent('show-notification', { 
+          detail: { message: 'Failed to import chat history. Invalid file format.', type: 'error' }
+        }));
+      }
+    };
+    input.click();
+  };
+
+  const filteredMessages = searchQuery.trim() 
+    ? messages.filter(msg => 
+        msg.content.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        msg.role.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+    : messages;
+
+  const highlightText = (text, query) => {
+    if (!query.trim()) return text;
+    
+    const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    const parts = text.split(regex);
+    
+    return parts.map((part, i) => 
+      regex.test(part) ? (
+        <mark key={i} className="bg-yellow-200 text-black px-1 rounded">{part}</mark>
+      ) : part
+    );
   };
 
   const applyToEditor = async (codeContent) => {
@@ -262,16 +640,23 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
         const result = await response.json();
         
         if (response.ok) {
-          alert(`File created successfully at: ${filePath}`);
+          // Dispatch custom event for notification instead of alert
+          window.dispatchEvent(new CustomEvent('show-notification', { 
+            detail: { message: `File created successfully at: ${filePath}`, type: 'success' }
+          }));
           // Trigger a refresh of the file tree
           window.dispatchEvent(new CustomEvent('refresh-filetree'));
         } else {
-          alert(`Failed to create file: ${result.error || 'Unknown error'}`);
+          window.dispatchEvent(new CustomEvent('show-notification', { 
+            detail: { message: `Failed to create file: ${result.error || 'Unknown error'}`, type: 'error' }
+          }));
         }
         return;
       } catch (e) {
         console.error('File creation error:', e);
-        alert(`Error creating file: ${e.message}`);
+        window.dispatchEvent(new CustomEvent('show-notification', { 
+          detail: { message: `Error creating file: ${e.message}`, type: 'error' }
+        }));
         return;
       }
     }
@@ -283,21 +668,31 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
         // Try several -p levels server-side to avoid manual editing
         const dry = await applyGitDiff(codeContent, { dryRun: true });
         if (dry?.ok === false) {
-          alert(`Diff failed dry-run:\n${dry.stderr || dry.stdout || 'Unknown error'}`);
+          window.dispatchEvent(new CustomEvent('show-notification', { 
+            detail: { message: `Diff failed dry-run:\n${dry.stderr || dry.stdout || 'Unknown error'}`, type: 'error' }
+          }));
           return;
         }
         const res = await applyGitDiff(codeContent, { dryRun: false });
         if (res?.ok) {
-          alert('Changes applied successfully!');
+          window.dispatchEvent(new CustomEvent('show-notification', { 
+            detail: { message: 'Changes applied successfully!', type: 'success' }
+          }));
         } else {
-          alert(`Failed to apply changes:\n${res?.stderr || res?.stdout || 'Unknown error'}`);
+          window.dispatchEvent(new CustomEvent('show-notification', { 
+            detail: { message: `Failed to apply changes:\n${res?.stderr || res?.stdout || 'Unknown error'}`, type: 'error' }
+          }));
         }
       } catch (e) {
         console.error('Error applying diff:', e);
-        alert(`Error applying changes: ${e.message}`);
+        window.dispatchEvent(new CustomEvent('show-notification', { 
+          detail: { message: `Error applying changes: ${e.message}`, type: 'error' }
+        }));
       }
     } else {
-      alert('No file path specified. Add a comment like "// path: filename.ext" at the top of the code block.');
+      window.dispatchEvent(new CustomEvent('show-notification', { 
+        detail: { message: 'No file path specified. Add a comment like "// path: filename.ext" at the top of the code block.', type: 'error' }
+      }));
     }
   };
 
@@ -407,7 +802,7 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
     );
   };
 
-  const Message = ({ message, onApplyCode }) => {
+  const Message = ({ message, onApplyCode, searchQuery }) => {
     const splitIntoSegments = (raw) => {
       if (typeof raw !== 'string') return [{ type: 'text', text: '' }];
       const fenceCount = (raw.match(/```/g) || []).length;
@@ -470,8 +865,27 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
               ) : (
                 seg.text.trim() ? (
                   <div key={idx} className="prose prose-sm dark:prose-invert max-w-none">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {seg.text}
+                    <ReactMarkdown 
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        img: ({ src, alt }) => (
+                          <div className="my-2">
+                            <img 
+                              src={src} 
+                              alt={alt || 'Image'} 
+                              className="max-w-full h-auto rounded border border-gray-300 dark:border-gray-600"
+                              style={{ maxHeight: '300px' }}
+                            />
+                            {alt && (
+                              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 text-center">
+                                {alt}
+                              </p>
+                            )}
+                          </div>
+                        )
+                      }}
+                    >
+                      {searchQuery ? highlightText(seg.text, searchQuery) : seg.text}
                     </ReactMarkdown>
                   </div>
                 ) : null
@@ -489,6 +903,102 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
     );
   };
 
+  // Update handleSend to include image data
+  const handleSend = async (e) => {
+    if (e) e.preventDefault();
+    console.log('handleSend called with input:', input);
+    if (!input.trim() || loading) {
+      console.log('Not sending - empty input or already loading');
+      return;
+    }
+
+    const userMessage = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: input,
+      timestamp: new Date(),
+      isError: false
+    };
+
+    console.log('Adding user message to UI:', userMessage);
+    setMessages(prev => [...prev, userMessage]);
+    setInput("");
+    setLoading(true);
+
+    // If this is the first message in a new conversation, create it
+    if (messages.length === 0 && currentUser) {
+      try {
+        const newConv = await createConversation(currentUser.userId, 'New Chat', input);
+        setConversations(prev => [
+          {
+            id: newConv._id,
+            title: newConv.title,
+            isActive: true,
+            updatedAt: new Date(newConv.updatedAt)
+          },
+          ...prev.map(c => ({ ...c, isActive: false }))
+        ]);
+      } catch (error) {
+        console.error('Error creating conversation:', error);
+      }
+    }
+
+    try {
+      console.log('Calling aiComplete with prompt:', input);
+      console.log('Input contains image references:', input.includes('!['));
+      
+      // Get image data for AI processing
+      const imageData = await getImageDataForAI();
+      console.log('Image data for AI:', imageData.length, 'images');
+      
+      // Build appropriate system prompt based on whether images are present
+      let systemPrompt;
+      if (imageData.length > 0) {
+        systemPrompt = `You are a helpful AI assistant that can analyze images and provide detailed descriptions. When analyzing images:\n- Provide detailed descriptions of what you see in the image\n- Identify objects, people, text, colors, and overall composition\n- Describe the mood, setting, and context if applicable\n- Be specific and thorough in your analysis\n- If the image contains text, try to read and include it in your response\n- If asked about code or technical content in the image, provide helpful explanations\n- Respond in a conversational, helpful tone`;
+      } else {
+        systemPrompt = `You are an in-editor AI coding assistant. Goals:\n- Write high-quality code edits for the user's project.\n- Respond with concise, skimmable Markdown.\n- By default, output the FINAL FILE CONTENT in a single fenced code block with the correct language. Add the first line as a comment containing the relative file path, like: // path: src/file.ts (or # path: file.py).\n- Only return a unified diff (\`\`\`diff) if the user explicitly asks for a diff.\n- Provide a short summary below the code block if needed.\n- Prefer small, focused edits over large rewrites.\n- If unclear, ask one clarifying question.\n- Maintain cycles of correction and improvement if the user provides feedback.\n- NEVER fabricate files or APIs not present in the provided context.`;
+      }
+
+      // Include last messages for short-term memory, and (optionally) a few open files when integrated
+      const recent = messages.slice(-8).map(m => ({ role: m.role, content: m.content }));
+
+      console.log('Sending request to AI with:', {
+        prompt: input,
+        imageCount: imageData.length,
+        systemPrompt: systemPrompt.substring(0, 100) + '...'
+      });
+      
+      const response = await aiComplete(input, recent, [], systemPrompt, [], imageData);
+      console.log('Received response from aiComplete:', response);
+      
+      // Handle both old and new response formats
+      const responseText = response.text || response.result || 'No response from AI';
+      console.log('Response text:', responseText);
+      
+      const aiMessage = {
+        id: (Date.now() + 1).toString(),
+        role: 'ai',
+        content: responseText,
+        timestamp: new Date(),
+        isError: false,
+        usage: response.usage || null
+      };
+      setMessages(prev => [...prev, aiMessage]);
+    } catch (error) {
+      console.error('Error sending message:', error);
+      const errorMessage = {
+        id: (Date.now() + 1).toString(),
+        role: 'ai',
+        content: `Sorry, I encountered an error processing your request: ${error.message}`,
+        timestamp: new Date(),
+        isError: true
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -499,34 +1009,76 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
     }
   }, [isOpen, isInitialized, initializeUser]);
 
+  // Load uploaded images when component initializes
+  useEffect(() => {
+    if (isInitialized) {
+      loadUploadedImages();
+    }
+  }, [isInitialized]);
+
   useEffect(() => {
     const saveCurrentConversation = async () => {
       const activeConv = conversations.find(c => c.isActive);
       if (!activeConv || !currentUser || messages.length === 0) return;
       
+      console.log('Attempting to save conversation:', {
+        id: activeConv.id,
+        title: activeConv.title,
+        messageCount: messages.length,
+        userId: currentUser.userId
+      });
+      
+      // Don't try to save fallback conversations or conversations that weren't created on the server
+      if (activeConv.id.startsWith('fallback-') || !activeConv.id.match(/^[0-9a-fA-F]{24}$/) || !activeConv.isServerConversation) {
+        console.log('Skipping save for fallback, invalid, or non-server conversation ID:', activeConv.id);
+        return;
+      }
+      
       try {
+        // Generate a title from the first user message if it's a new conversation
+        let title = activeConv.title;
+        if (activeConv.title === 'New Chat' && messages.length > 0) {
+          const firstUserMessage = messages.find(m => m.role === 'user');
+          if (firstUserMessage) {
+            title = firstUserMessage.content.substring(0, 30).trim();
+            if (title.length > 5) {
+              title = title.charAt(0).toUpperCase() + title.slice(1);
+            } else {
+              title = 'New Chat';
+            }
+          }
+        }
+        
         await updateConversation(
           activeConv.id,
-          currentUser._id,
-          messages
+          currentUser.userId,
+          messages,
+          title
         );
         
-        // Update the conversation's updatedAt timestamp
+        // Update the conversation's title and updatedAt timestamp
         setConversations(prev => 
           prev.map(c => 
             c.id === activeConv.id 
-              ? { ...c, updatedAt: new Date() } 
+              ? { ...c, title, updatedAt: new Date() } 
               : c
           )
         );
       } catch (error) {
         console.error('Error saving conversation:', error);
+        // Don't show notification for save errors as they shouldn't block the chat
+        // The conversation will still be saved locally in the UI
       }
     };
     
-    // Only save if we have messages and a user is logged in
+    // Only save if we have messages, a user is logged in, and a valid server conversation
     if (isInitialized && messages.length > 0 && currentUser) {
-      saveCurrentConversation();
+      const activeConv = conversations.find(c => c.isActive);
+      if (activeConv && activeConv.isServerConversation) {
+        // Debounce the save to avoid too many API calls
+        const timeoutId = setTimeout(saveCurrentConversation, 1000);
+        return () => clearTimeout(timeoutId);
+      }
     }
   }, [messages, currentUser, conversations, isInitialized]);
 
@@ -569,10 +1121,48 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
             >
               <div className="flex items-center">
                 <FaRegStar className="w-4 h-4 mr-2 text-[#858585]" />
-                <span className="truncate">{conversation.title}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="truncate">
+                    {editingTitle === conversation.id ? (
+                      <input
+                        type="text"
+                        value={editTitleValue}
+                        onChange={(e) => setEditTitleValue(e.target.value)}
+                        onBlur={() => handleSaveTitle(conversation.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleSaveTitle(conversation.id);
+                          } else if (e.key === 'Escape') {
+                            handleCancelEdit();
+                          }
+                        }}
+                        className="bg-transparent text-gray-300 focus:outline-none"
+                        style={{ width: `${editTitleValue.length * 8 + 20}px` }}
+                      />
+                    ) : (
+                      conversation.title
+                    )}
+                  </div>
+                  <div className="text-xs text-[#858585] truncate">
+                    {conversation.updatedAt ? new Date(conversation.updatedAt).toLocaleDateString() : 'Today'}
+                  </div>
+                </div>
                 <button 
-                  onClick={() => handleDeleteConversation(conversation.id)}
-                  className="ml-auto text-[#858585] hover:text-[#e0e0e0] transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleEditTitle(conversation);
+                  }}
+                  className="ml-2 text-[#858585] hover:text-[#e0e0e0] transition-colors opacity-0 group-hover:opacity-100"
+                >
+                  <FaRegEdit className="w-4 h-4" />
+                </button>
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeleteConversation(conversation.id);
+                  }}
+                  className="ml-2 text-[#858585] hover:text-[#e0e0e0] transition-colors opacity-0 group-hover:opacity-100"
                 >
                   <FaRegTrashAlt className="w-4 h-4" />
                 </button>
@@ -608,7 +1198,25 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
             {conversations.find(c => c.isActive)?.title || 'New Chat'}
           </h3>
           <div className="flex items-center space-x-2">
-            <button className="p-1 text-[#858585] hover:text-[#e0e0e0] hover:bg-[#2d2d2d] rounded">
+            <button 
+              onClick={exportChatHistory}
+              className="p-1 text-[#858585] hover:text-[#e0e0e0] hover:bg-[#2d2d2d] rounded"
+              title="Export chat history"
+            >
+              <FaRegFileAlt className="w-4 h-4" />
+            </button>
+            <button 
+              onClick={importChatHistory}
+              className="p-1 text-[#858585] hover:text-[#e0e0e0] hover:bg-[#2d2d2d] rounded"
+              title="Import chat history"
+            >
+              <FaRegClone className="w-4 h-4" />
+            </button>
+            <button 
+              onClick={() => setShowSearch(!showSearch)}
+              className={`p-1 rounded ${showSearch ? 'text-[#0d6efd] bg-[#2d2d2d]' : 'text-[#858585] hover:text-[#e0e0e0] hover:bg-[#2d2d2d]'}`}
+              title="Search chat history"
+            >
               <FaSearch className="w-4 h-4" />
             </button>
             <button 
@@ -620,6 +1228,48 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
             </button>
           </div>
         </div>
+
+        {/* Conversation Stats */}
+        {messages.length > 0 && (
+          <div className="px-4 py-2 bg-[#1e1e1e] border-b border-[#2d2d2d] text-xs text-[#858585]">
+            <div className="flex items-center justify-between">
+              <span>{messages.length} messages</span>
+              <span>
+                Last active: {conversations.find(c => c.isActive)?.updatedAt 
+                  ? new Date(conversations.find(c => c.isActive).updatedAt).toLocaleString() 
+                  : 'Now'}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Search Input */}
+        {showSearch && (
+          <div className="px-4 py-2 bg-[#1e1e1e] border-b border-[#2d2d2d]">
+            <div className="relative">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search messages..."
+                className="w-full bg-[#2d2d2d] text-[#e0e0e0] border border-[#3c3c3c] rounded px-3 py-2 text-sm focus:outline-none focus:border-[#0d6efd]"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1/2 transform -translate-y-1/2 text-[#858585] hover:text-[#e0e0e0]"
+                >
+                  <FaTimes className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+            {searchQuery && (
+              <div className="mt-2 text-xs text-[#858585]">
+                Found {filteredMessages.length} messages
+              </div>
+            )}
+          </div>
+        )}
         
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -627,9 +1277,16 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
             <div className="flex items-center justify-center h-full">
               <FaSpinner className="animate-spin text-blue-500 text-2xl" />
             </div>
+          ) : searchQuery && filteredMessages.length === 0 ? (
+            <div className="flex items-center justify-center h-full text-[#858585]">
+              <div className="text-center">
+                <div className="text-lg mb-2">No messages found</div>
+                <div className="text-sm">Try adjusting your search query</div>
+              </div>
+            </div>
           ) : (
-            messages.map((message) => (
-              <Message key={message.id} message={message} />
+            filteredMessages.map((message) => (
+              <Message key={message.id} message={message} searchQuery={searchQuery} />
             ))
           )}
           <div ref={messagesEndRef} />
@@ -637,6 +1294,132 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
         
         {/* Input Area */}
         <div className="border-t border-[#2d2d2d] p-3 bg-[#252526]">
+          {/* Image Upload Controls */}
+          <div className="flex items-center space-x-3 mb-3">
+            {/* Gallery Button with Mountain Icon */}
+            <button
+              type="button"
+              onClick={() => setShowImageGallery(!showImageGallery)}
+              className="flex items-center justify-center w-10 h-10 bg-[#3c3c3c] hover:bg-[#4d4d4d] text-[#858585] hover:text-[#e0e0e0] rounded-lg transition-colors"
+              title="Image gallery"
+            >
+              <svg 
+                className="w-5 h-5" 
+                viewBox="0 0 24 24" 
+                fill="currentColor"
+              >
+                <path d="M12 2L2 12h3v8h6v-6h2v6h6v-8h3L12 2z"/>
+                <circle cx="18" cy="6" r="2"/>
+              </svg>
+            </button>
+            
+            {/* Upload Button with Arrow in Circle */}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploadingImage}
+              className="flex items-center justify-center w-10 h-10 bg-[#3c3c3c] hover:bg-[#4d4d4d] text-[#858585] hover:text-[#e0e0e0] rounded-lg transition-colors disabled:opacity-50"
+              title="Upload images"
+            >
+              {uploadingImage ? (
+                <FaSpinner className="w-5 h-5 animate-spin" />
+              ) : (
+                <svg 
+                  className="w-5 h-5" 
+                  viewBox="0 0 24 24" 
+                  fill="currentColor"
+                >
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M12 6v6m0 0l-3-3m3 3l3-3"/>
+                </svg>
+              )}
+            </button>
+            
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={handleImageUpload}
+              className="hidden"
+            />
+          </div>
+
+          {/* Image Gallery */}
+          {showImageGallery && (
+            <div className="mb-3 p-4 bg-[#1e1e1e] rounded-lg border border-[#3c3c3c]">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-sm font-medium text-[#e0e0e0]">Uploaded Images</h4>
+                <button
+                  onClick={() => setShowImageGallery(false)}
+                  className="text-[#858585] hover:text-[#e0e0e0] p-1 rounded"
+                >
+                  <FaTimes className="w-4 h-4" />
+                </button>
+              </div>
+              {uploadedImages.length === 0 ? (
+                <p className="text-xs text-[#858585] text-center py-4">No images uploaded yet</p>
+              ) : (
+                <div className="grid grid-cols-4 gap-2 max-h-40 overflow-y-auto">
+                  {uploadedImages.map((image) => (
+                    <div key={image.filename} className="relative group">
+                      <img
+                        src={image.url}
+                        alt={image.filename}
+                        className="w-full h-16 object-cover rounded border border-[#3c3c3c] cursor-pointer hover:border-[#0d6efd] transition-colors"
+                        onClick={() => insertImageReference(image.url, image.filename)}
+                        title="Click to insert image reference"
+                      />
+                      <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-30 transition-all rounded flex items-center justify-center">
+                        <span className="text-white text-xs opacity-0 group-hover:opacity-100 font-medium">
+                          Insert
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Current Image References Preview */}
+          {(() => {
+            const imageRefs = input.match(/!\[([^\]]*)\]\(([^)]+)\)/g) || [];
+            if (imageRefs.length === 0) return null;
+            
+            return (
+              <div className="mb-3 p-3 bg-[#1e1e1e] rounded-lg border border-[#3c3c3c]">
+                <div className="flex items-center justify-between mb-2">
+                  <h5 className="text-xs font-medium text-[#e0e0e0]">Image References ({imageRefs.length})</h5>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {imageRefs.map((ref, index) => {
+                    const match = ref.match(/!\[([^\]]*)\]\(([^)]+)\)/);
+                    if (!match) return null;
+                    const [, alt, url] = match;
+                    return (
+                      <div key={index} className="flex items-center space-x-2 bg-[#2d2d2d] rounded-lg px-3 py-2">
+                        <img
+                          src={url}
+                          alt={alt || 'Image'}
+                          className="w-6 h-6 object-cover rounded"
+                        />
+                        <span className="text-xs text-[#e0e0e0]">{alt || 'Image'}</span>
+                        <button
+                          onClick={() => removeImageReference(url)}
+                          className="text-[#858585] hover:text-red-400 text-xs p-1 rounded"
+                          title="Remove image reference"
+                        >
+                          <FaTimes className="w-3 h-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
           <form onSubmit={handleSend} className="relative">
             <textarea
               value={input}
@@ -647,21 +1430,21 @@ const NewAIChatPanel = ({ isOpen, onClose }) => {
                   handleSend(e);
                 }
               }}
-              placeholder="Type a message..."
-              className="w-full bg-[#2d2d2d] text-[#e0e0e0] border border-[#3c3c3c] rounded-lg p-3 pr-10 focus:outline-none focus:border-[#0d6efd] resize-none"
+              placeholder="Type a message... (You can upload images for AI analysis)"
+              className="w-full bg-[#2d2d2d] text-[#e0e0e0] border border-[#3c3c3c] rounded-lg p-4 pr-12 focus:outline-none focus:border-[#0d6efd] resize-none"
               rows={1}
-              style={{ minHeight: '44px', maxHeight: '200px' }}
+              style={{ minHeight: '56px', maxHeight: '200px' }}
               disabled={loading}
             />
             <button
               type="submit"
               disabled={!input.trim() || loading}
-              className="absolute right-2 bottom-2 p-1 text-[#858585] hover:text-[#e0e0e0] disabled:opacity-50"
+              className="absolute right-3 bottom-3 p-2 text-[#858585] hover:text-[#e0e0e0] disabled:opacity-50 rounded-lg hover:bg-[#3c3c3c] transition-colors"
             >
-              <FaPaperPlane className="w-4 h-4" />
+              <FaPaperPlane className="w-5 h-5" />
             </button>
           </form>
-          <div className="text-xs text-[#858585] mt-1 text-center">
+          <div className="text-xs text-[#858585] mt-2 text-center">
             {loading ? 'AI is thinking...' : 'Press Enter to send, Shift+Enter for new line'}
           </div>
         </div>

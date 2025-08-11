@@ -7,6 +7,7 @@ import useEditorHotkeys from "./hooks/useHotkeys";
 import FileTree from "./components/FileTree";
 import TabsBar from "./components/TabsBar";
 import RunPanel from "./components/RunPanel";
+import Notification from "./components/Notification";
 import { fsRead, fsWrite } from "./api";
 
 export default function App() {
@@ -19,19 +20,20 @@ export default function App() {
   const [showRun, setShowRun] = useState(false);
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
   const [runTrigger, setRunTrigger] = useState(0);
+  const [notification, setNotification] = useState({ message: '', isVisible: false });
 
   // Hotkey actions
   useEditorHotkeys({
     onAICommand: () => setIsAIPanelOpen(prev => !prev),
-    onGoToFile: () => alert("Go to File!"),
-    onSearchProject: () => alert("Search Project!"),
+    onGoToFile: () => showNotification("Go to File!", "info"),
+    onSearchProject: () => showNotification("Search Project!", "info"),
     onAskAIAboutSelection: () => {
       // This would get the selected text from the editor
       if (selectedText) {
         // Handle AI query about selection
         console.log("Asking AI about selection:", selectedText);
       } else {
-        alert("Please select some text first!");
+        showNotification("Please select some text first!", "error");
       }
     },
   });
@@ -56,6 +58,18 @@ export default function App() {
     window.addEventListener('ai-apply-code', handler);
     return () => window.removeEventListener('ai-apply-code', handler);
   }, [activePath]);
+
+  // Handle notification events from child components
+  useEffect(() => {
+    const handler = (e) => {
+      const { message, type } = e.detail || {};
+      if (message) {
+        showNotification(message, type);
+      }
+    };
+    window.addEventListener('show-notification', handler);
+    return () => window.removeEventListener('show-notification', handler);
+  }, []);
 
   const getLanguageFromPath = (path) => {
     if (!path) return "javascript";
@@ -114,9 +128,19 @@ export default function App() {
     if (!activePath) return;
     try {
       await fsWrite(activePath, filesByPath[activePath] ?? "");
+      showNotification("File saved successfully!");
     } catch (e) {
       console.error("Save failed:", e);
+      showNotification("Failed to save file", "error");
     }
+  };
+
+  const showNotification = (message, type = "success") => {
+    setNotification({ message, isVisible: true, type });
+  };
+
+  const hideNotification = () => {
+    setNotification(prev => ({ ...prev, isVisible: false }));
   };
 
   return (
@@ -331,6 +355,14 @@ export default function App() {
           </div>
         </div>
       </footer>
+      
+      {/* Notification */}
+      <Notification 
+        message={notification.message}
+        isVisible={notification.isVisible}
+        onHide={hideNotification}
+        type={notification.type}
+      />
     </div>
   );
 }

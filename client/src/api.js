@@ -1,20 +1,27 @@
 // API helpers for frontend
-export async function aiComplete({ prompt, files, language, history, systemPrompt }) {
-  const res = await fetch("/api/ai/complete", {
+export async function aiComplete(prompt, history = [], files = [], systemPrompt = "", filePaths = [], imageData = []) {
+  const res = await fetch(`/api/ai/complete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, files, language, history, systemPrompt })
+    body: JSON.stringify({ prompt, history, files, systemPrompt, filePaths, imageData })
   });
-  let data;
-  try {
-    data = await res.json();
-  } catch (e) {
-    throw new Error("Invalid or empty JSON from backend (possible Gemini API error)");
-  }
-  if (!res.ok) {
-    throw new Error(data.error || "Unknown error from backend");
-  }
-  return data;
+  return res.json();
+}
+
+export async function uploadImage(imageFile) {
+  const formData = new FormData();
+  formData.append('image', imageFile);
+  
+  const res = await fetch('/api/ai/upload-image', {
+    method: 'POST',
+    body: formData
+  });
+  return res.json();
+}
+
+export async function getUploadedImages() {
+  const res = await fetch('/api/ai/images');
+  return res.json();
 }
 
 export async function getPromptTemplates() {

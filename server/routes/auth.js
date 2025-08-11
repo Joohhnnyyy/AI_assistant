@@ -4,6 +4,26 @@ import { User, Conversation } from '../models/User.js';
 
 const router = express.Router();
 
+// Generate a meaningful title from the first user message
+const generateTitle = (message) => {
+  if (!message || message.length < 10) return 'New Chat';
+  
+  // Take first 30 characters and clean up
+  let title = message.substring(0, 30).trim();
+  
+  // Remove common prefixes
+  title = title.replace(/^(help|how|what|why|can|please|i need|i want|show me|explain|create|make|build|fix|debug|help me|how to|what is|why is|can you|please help|i need help|i want to|show me how|explain how|create a|make a|build a|fix the|debug the)/i, '');
+  
+  // Clean up and capitalize
+  title = title.replace(/[^\w\s-]/g, '').trim();
+  title = title.charAt(0).toUpperCase() + title.slice(1);
+  
+  // If title is too short, use a default
+  if (title.length < 5) title = 'New Chat';
+  
+  return title;
+};
+
 // Get or create user
 router.post('/login', async (req, res) => {
   try {
@@ -102,15 +122,18 @@ router.get('/conversations/:id', async (req, res) => {
 // Create a new conversation
 router.post('/conversations', async (req, res) => {
   try {
-    const { userId, title = 'New Chat' } = req.body;
+    const { userId, title = 'New Chat', firstMessage } = req.body;
     
     if (!userId) {
       return res.status(400).json({ error: 'User ID is required' });
     }
     
+    // Generate title from first message if provided
+    const conversationTitle = firstMessage ? generateTitle(firstMessage) : title;
+    
     const conversation = new Conversation({
       userId,
-      title,
+      title: conversationTitle,
       messages: [{
         role: 'ai',
         content: 'Hello! How can I assist you with your coding today?',
@@ -136,7 +159,7 @@ router.post('/conversations', async (req, res) => {
 router.put('/conversations/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { userId, messages } = req.body;
+    const { userId, messages, title } = req.body;
     
     if (!userId) {
       return res.status(400).json({ error: 'User ID is required' });
@@ -148,19 +171,61 @@ router.put('/conversations/:id', async (req, res) => {
       return res.status(404).json({ error: 'Conversation not found' });
     }
     
-    // Add new messages
+    // Update messages (replace instead of append)
     if (Array.isArray(messages)) {
-      conversation.messages.push(...messages);
-      await conversation.save();
+      conversation.messages = messages;
     }
+    
+    // Update title if provided
+    if (title && title !== conversation.title) {
+      conversation.title = title;
+    }
+    
+    // Update timestamp
+    conversation.updatedAt = new Date();
+    
+    await conversation.save();
     
     res.json({
       success: true,
-      messageCount: conversation.messages.length
+      messageCount: conversation.messages.length,
+      updatedAt: conversation.updatedAt
     });
     
   } catch (error) {
     console.error('Update conversation error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update a conversation title
+router.patch('/conversations/:id/title', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userId, title } = req.body;
+    
+    if (!userId || !title) {
+      return res.status(400).json({ error: 'User ID and title are required' });
+    }
+    
+    const conversation = await Conversation.findOne({ _id: id, userId });
+    
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+    
+    conversation.title = title;
+    conversation.updatedAt = new Date();
+    await conversation.save();
+    
+    res.json({
+      success: true,
+      title: conversation.title,
+      updatedAt: conversation.updatedAt
+    });
+    
+  } catch (error) {
+    console.error('Update title error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -29,3 +29,4 @@ export default function TabsBar({ tabs, activePath, onActivate, onClose }) {
 }
 
 
+
